@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import copy
 import random
 import math
+import sys
 
 
 class Game2048Env(gym.Env):
@@ -231,10 +232,114 @@ class Game2048Env(gym.Env):
         # If the simulated board is different from the current board, the move is legal
         return not np.array_equal(self.board, temp_board)
 
+class UCTNode:
+    def __init__(self, env, state, score, parent=None, action=None):
+        self.state = state
+        self.score = score
+        self.parent = parent
+        self.action = action
+        self.env = copy.deepcopy(env)
+        self.children = {}
+        self.visits = 0
+        self.total_reward = 0.0
+        self.untried_actions = [a for a in range(4) if self.env.is_move_legal(a)]
+
+    def fully_expanded(self):
+        return len(self.untried_actions) == 0
+
+class UCTMCTS:
+    def __init__(self, iterations=50, exploration_constant=1.41, rollout_depth=10):
+        self.iterations = iterations
+        self.c = exploration_constant
+        self.rollout_depth = rollout_depth
+
+    def create_env_from_state(self, env, state, score):
+        new_env = copy.deepcopy(env)
+        new_env.board = state.copy()
+        new_env.score = score
+        return new_env
+
+    def select_child(self, node):
+        best_uct = -math.inf
+        best_child = None
+        for child in node.children.values():
+            if child.visits == 0:
+                return child
+            exploitation = child.total_reward / child.visits
+            exploration = self.c * math.sqrt(math.log(node.visits) / child.visits)
+            uct = exploitation + exploration
+            if uct > best_uct:
+                best_uct = uct
+                best_child = child
+        return best_child
+
+    def rollout(self, sim_env, depth):
+        total_reward = 0.0
+        for _ in range(depth):
+            legal_moves = [a for a in range(4) if sim_env.is_move_legal(a)]
+            if not legal_moves:
+                break
+            action = random.choice(legal_moves)
+            old_score = sim_env.score
+            _, new_score, done, _ = sim_env.step(action)
+            total_reward += new_score - old_score
+            if done:
+                break
+        return total_reward
+
+    def backpropagate(self, node, reward):
+        while node is not None:
+            node.visits += 1
+            node.total_reward += reward
+            node = node.parent
+
+    def run_simulation(self, root):
+        node = root
+        sim_env = self.create_env_from_state(root.env, root.state, root.score)
+
+        # Selection
+        while node.fully_expanded() and node.children:
+            node = self.select_child(node)
+            if node.action is not None:
+                _, new_score, done, _ = sim_env.step(node.action)
+                sim_env.score = new_score
+                if done:
+                    return
+
+        # Expansion
+        if node.untried_actions:
+            action = random.choice(node.untried_actions)
+            node.untried_actions.remove(action)
+            _, new_score, done, _ = sim_env.step(action)
+            new_node = UCTNode(sim_env, sim_env.board.copy(), new_score, parent=node, action=action)
+            node.children[action] = new_node
+            node = new_node
+
+        # Rollout and backpropagation
+        reward = self.rollout(sim_env, self.rollout_depth)
+        self.backpropagate(node, reward)
+
+    def best_action(self, root):
+        best_visits = -1
+        best_action = None
+        for action, child in root.children.items():
+            if child.visits > best_visits:
+                best_visits = child.visits
+                best_action = action
+        return best_action     
+
+
+
+
 def get_action(state, score):
     env = Game2048Env()
-    return random.choice([0, 1, 2, 3]) # Choose a random action
-    
-    # You can submit this random agent to evaluate the performance of a purely random strategy.
+    env.board = state.copy()
+    env.score = score
 
+    mcts = UCTMCTS(iterations=50, exploration_constant=1.41, rollout_depth=10)
+    root = UCTNode(env, env.board.copy(), env.score)
 
+    for _ in range(mcts.iterations):
+        mcts.run_simulation(root)
+
+    return mcts.best_action(root)

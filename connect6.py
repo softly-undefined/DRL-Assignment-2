@@ -1,6 +1,117 @@
 import sys
 import numpy as np
 import random
+import math
+import pandas as pd
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+from datetime import datetime
+
+
+class UCTNode:
+    def __init__(self, state, turn, parent=None, action=None):
+        self.state = state
+        self.turn = turn
+        self.parent = parent
+        self.action = action
+        self.children = {}
+        self.visits = 0
+        self.total_reward = 0.0
+        self.untried_actions = self.get_legal_actions()
+
+    def get_legal_actions(self): #all the places we can put it !
+        return [(r, c) for r in range(self.state.shape[0]) for c in range(self.state.shape[1]) if self.state[r, c] == 0]
+
+    def fully_expanded(self): #if it is fully expanded (returns a boolean)
+        return len(self.untried_actions) == 0
+
+class UCTMCTS:
+    def __init__(self, iterations=150000, exploration_constant=1.41):
+        self.iterations = iterations
+        self.c = exploration_constant
+
+    def create_env_from_state(self, board, turn):
+        env = Connect6Game(size=board.shape[0])
+        env.board = board.copy()
+        env.turn = turn
+        return env
+
+    def select_child(self, node):
+        best_uct = -math.inf
+        best_child = None
+
+        for child in node.children.values():
+            if child.visits == 0:
+                uct = math.inf
+            else:
+                exploitation = child.total_reward / child.visits
+                exploration = self.c * math.sqrt(math.log(node.visits + 1) / child.visits)
+                uct = exploitation + exploration
+
+            if uct > best_uct:
+                best_uct = uct
+                best_child = child
+
+        return best_child
+
+    def rollout(self, env, rollout_depth=7):
+        action_count = 0
+        max_moves = env.size * env.size #size of the board
+        starting_turn = env.turn
+
+        while not env.game_over and action_count < rollout_depth:
+            legal_moves = [(r, c) for r in range(env.size) for c in range(env.size) if env.board[r, c] == 0]
+            if not legal_moves:
+                break
+            action = random.choice(legal_moves)
+            action_str = f"{chr(ord('A') + action[1] + (1 if action[1] >= 8 else 0))}{action[0]+1}"
+            env.play_move('B' if env.turn == 1 else 'W', action_str, printing=False)
+            winner = env.check_win()
+            if winner:
+                #print('is this happening?')
+                if winner == starting_turn:
+                    return (max_moves - action_count) / max_moves 
+                else:
+                    return 0.0
+            action_count += 1
+            if action_count > max_moves:
+                break
+        return 0
+
+    def backpropagate(self, node, reward):
+        while node:
+            node.visits += 1
+            node.total_reward += reward
+            node = node.parent
+
+    def run_simulation(self, root):
+        node = root
+        env = self.create_env_from_state(root.state, root.turn)
+
+        while node.fully_expanded() and node.children:
+            node = self.select_child(node)
+            action_str = f"{chr(ord('A') + node.action[1] + (1 if node.action[1] >= 8 else 0))}{node.action[0]+1}"
+            env.play_move('B' if env.turn == 1 else 'W', action_str, printing=False)
+
+        while node.untried_actions:
+            action = random.choice(node.untried_actions)
+            node.untried_actions.remove(action)
+            if env.board[action[0], action[1]] != 0:
+                continue
+            
+            action_str = f"{chr(ord('A') + action[1] + (1 if action[1] >= 8 else 0))}{action[0]+1}"
+            env.play_move('B' if env.turn == 1 else 'W', action_str, printing=False)
+            new_node = UCTNode(env.board.copy(), env.turn, parent=node, action=action)
+            node.children[action] = new_node
+            node = new_node
+            break
+        
+        reward = self.rollout(env)
+        self.backpropagate(node, reward)
+
+    def best_action(self, root):
+        return max(root.children.items(), key=lambda item: item[1].visits)[0]
+
 
 class Connect6Game:
     def __init__(self, size=19):
@@ -98,21 +209,26 @@ class Connect6Game:
         self.turn = 3 - self.turn
         print('= ', end='', flush=True)
 
+
+
     def generate_move(self, color):
-        """Generates a random move for the computer."""
-        if self.game_over:
-            print("? Game over")
-            return
-
-        empty_positions = [(r, c) for r in range(self.size) for c in range(self.size) if self.board[r, c] == 0]
-        selected = random.sample(empty_positions, 1)
-        move_str = ",".join(f"{self.index_to_label(c)}{r+1}" for r, c in selected)
-        
+        """Generates a move for the computer based on my logic!"""
+        root = UCTNode(self.board.copy(), self.turn)
+        iterations = 4000
+        mcts = UCTMCTS(iterations=iterations)
+            
+        for _ in range(mcts.iterations):
+            mcts.run_simulation(root)
+            
+        best_move = mcts.best_action(root)
+        # Convert best_move (a tuple (row, col)) to the move string.
+        move_str = f"{chr(ord('A') + best_move[1] + (1 if best_move[1] >= 8 else 0))}{best_move[0] + 1}"
         self.play_move(color, move_str)
-
         print(f"{move_str}\n\n", end='', flush=True)
         print(move_str, file=sys.stderr)
         return
+
+
     def show_board(self):
         """Displays the board as text."""
         print("= ")
